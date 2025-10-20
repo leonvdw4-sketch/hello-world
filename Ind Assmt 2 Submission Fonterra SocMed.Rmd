@@ -1,0 +1,319 @@
+---
+title: "Individual Task #2"
+output: 
+  html_document:
+    code_download: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+Maintain a tidy and readable R Markdown file that runs without any errors. Annotate your code by including brief descriptions of what the codes do.
+
+*Notes:* 
+- You can have separate code chunks within each section if preferred and/or include more subheadings. The `Insert a new code chunk` green button is on the top left corner and subheadings can be defined by hashtags.
+- Maintain the main headings that separate the requirements and make sure the codes can run in the order presented.
+- Consider completing your text responses in a document editor with spellcheck and then copy and paste the responses into the appropriate location in the RMD file.
+
+# Install and load packages and import and preview data
+
+```{r initial}
+# Install and load packages
+if(!require("pacman"))install.packages("pacman")
+pacman::p_load(readr, dplyr, tidyr, stringr, lubridate, purrr, ggplot2, gridExtra, GGally, corrplot)
+pacman::p_load(tidytext, tidyverse, textstem, wordcloud, textdata, topicmodels)
+pacman::p_load(DescTools, skimr, finalfit, rstatix, huxtable, jtools)
+
+# Import and preview data
+# Import files
+fonterra <- read_csv("fonterra.csv")
+
+# Preview data and initial inspection
+glimpse(fonterra)
+summary(fonterra)
+str(fonterra)
+
+```
+
+# Notes on judgements used for data preparation
+# Data preparation
+## Non-text data
+
+Brief notes on judgement applied:
+Converted "createdAt" data to just yearly value and added new column for easier analysis as the Line Manager's interest is in yearly comparisons.
+Removed rows where "likeCount" is NA as this is a critical value in our analysis across platforms, media and count. 
+This considerably reduced the dataset to a more concise set that reduces potential for duplication and missing values
+
+```{r req_2a}
+# Data preparation
+# Check createdAt data format
+head(fonterra$createdAt)
+class(fonterra$createdAt)
+
+# Convert createdAt to Date type
+fonterra$createdAt <- ymd_hms(fonterra$createdAt)
+
+# Extract year
+fonterra$createdAt_year <- year(fonterra$createdAt)
+
+# Handle missing data
+# Remove rows where likeCount is NA
+# Drop rows with missing platform, media, videoplayCount info
+
+fonterraNew <- fonterra %>%
+  filter(!is.na(likeCount)) %>%  
+  drop_na(platform) %>% 
+  drop_na(media) %>%
+  drop_na(videoplayCount)
+
+```
+
+# Notes on judgements used for new variables
+## New variables created
+
+Brief notes on why the variables created could be useful:
+Created new variable of "createdAt_year" data in just yearly value for easier analysis of time trends
+Created new variables for rate of engagement, combining all forms of engagement to show overall engagement on a post 
+Created a new variable for determining the importance of clean waterways in the text comments
+Created a new variable for which subjects in the text comments get most likes to determine the most liked subject matter
+One clear insight that emerges is that the most-liked social media post in the truncated fonterraNew3 dataset is the one about 
+Richie helping with Fonterra's "Milk for Schools" program. This promotional campaign where people can nominate their local primary school
+for a chance to win a special visit from Richie doing milk deliveries was the top-performing content with 2,673 likes. This content appears to
+have successfully generated more engagement than other posts by using local celebrity (Ritchie McCaw) and offering a competition to boost participation.  
+
+```{r req_2b}
+### Create new variables to ascertain patterns of engagement on posts
+## Create a new variable for Engagement rate that combines likeCount, commentCount, and shareCount to represent the overall engagement on a post
+# Create an engagement rate 
+fonterraNew2 <- fonterraNew %>%
+  mutate(engagementRate = (likeCount + commentCount + shareCount) / videoplayCount)
+
+## Create a new variable for determining the importance of clean waterways in the text comments
+library(dplyr)
+
+fonterraNew3 <- fonterraNew2 %>%
+  mutate(clean_water_importance = case_when(
+    grepl("water|waterways", text, ignore.case = TRUE) & 
+    grepl("clean|sustainable", text, ignore.case = TRUE) ~ "Yes", 
+    TRUE ~ "No"
+  ))
+
+# View the first few rows to check the result
+head(fonterraNew3)
+
+# Create a new variable for which subjects in the text comments get most likes
+library(dplyr)
+
+# Summarise the data to find the total likes for each text comment subject
+# Get the row with the highest total likes
+top_subject <- fonterraNew3 %>%
+  group_by(text) %>%
+  summarise(likeCount = sum(likeCount, na.rm = TRUE)) %>%
+  arrange(desc(likeCount)) %>%
+  slice(1)  
+
+# View the top subject matter with the most likes
+top_subject
+
+```
+
+## Text data
+
+```{r req_2c}
+# Term frequency analysis
+# Clean the text (remove common words, special characters, convert to lowercase etc.)
+fonterraNew3$text_clean <- fonterraNew3$text %>%
+  str_replace_all("[^[:alnum:][:space:]]", "") %>%
+  str_to_lower() %>%
+  str_trim()
+
+# First tokenise the text, then remove stop words
+fonterraNew3_tokens <- fonterraNew3 %>%
+  unnest_tokens(word, text_clean) %>%
+  anti_join(stop_words, by = "word")
+  
+# Calculate term frequency
+# First, check what tokens looks like
+class(tokens)
+head(tokens)
+
+# If tokens isn't a proper data frame, recreate it:
+tokens <- fonterraNew3 %>%
+  unnest_tokens(word, text_clean) %>%
+  anti_join(stop_words, by = "word")
+
+# View the top 10 most frequent terms
+head(tokens, 10)
+
+```
+
+# Data-informed insights and recommendations
+
+## Topics the content creators have been posting about
+
+To determine what topics the content creators have been mostly posting about on Fonterra’s social media accounts, will require term frequency analysis and topic modelling.
+When Term Frequency has been calculated, the next step is to visualise it using a word cloud.
+GGplot shows that the most frequent terms used are: "Uh" or "Um" (likely text pause), "milk", "farmers", "we've", "dairy", "people"
+Topic 1 (Red) - Product Safety & Quality depicts key terms ("customers", "food", "zealand", "safety", "products", "review") that appear to focus on product quality, food safety, and customer-related discussions, with New Zealand customers
+
+Topic 2 (Yellow-Green) - Dairy Industry & Farming depicts key terms ("wave", "farm", "cheese", "farmers", "dairy", "milk", "world", "people", "fonterra") that appear to cover farming operations, cheese production, and global dairy business
+
+Topic 3 (Teal) - Business & Economics depicts key terms ("farmers", "price", "business", "we've", "million") that appear to focus on business aspects of pricing, financial discussions, and farmer economics
+
+Topic 4 (Blue) - Environmental & Sustainability depicts key terms ("farm", "water", "farmers", "people", "year", "lot", "theyre", "zealand") that appear to cover environmental topics, water usage, and sustainability practices
+
+Topic 5 (Purple) - Corporate Communications depicts key terms ("milk", "dairy", "fonterra", "protein", "day", "music", "people", "program", "site") that appear to convey corporate communications, programs, and branded content
+
+Key Insights:
+The identified topics appear to capture a comprehensive spectrum of Fonterra's communications, from operational (farming, dairy) to strategic (business, safety)
+The appearance of filler words like "uh", "um", "yeah" suggest they came from transcribed audio/video content
+Topics 2 and 3 heavily feature core dairy business terms and show, as one would expect given Fonterra's business, "milk" to be the most frequent term 
+There are multiple topics mentioning "farmers" and "people", suggesting a stakeholder focus
+Engagement seems to be highest among the farm-centric topics of industry & economics, product type & pricing, corporate communications & branding.  
+
+
+```{r req_3ai}
+# Create the word frequency count
+word_freq <- tokens %>%
+  count(word, sort = TRUE)
+
+# Visualise the most frequent terms using ggplot
+word_freq %>%
+  slice_max(n, n = 10) %>%
+  ggplot(aes(x = reorder(word, n), y = n)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Top 10 Most Frequent Terms in Fonterra Posts",
+       x = "Term", y = "Frequency")
+
+
+```
+
+```{r req_3aii}
+# Topic modelling
+head(tokens)
+colnames(tokens)
+
+# Create DTM
+library(tm)
+library(topicmodels)
+library(tidytext)
+dtm <- tokens %>%
+  count(url, word, sort = TRUE) %>%
+  cast_dtm(url, word, n)
+
+# Check if the DTM was created properly
+dtm
+class(dtm)
+dim(dtm)
+
+# Check if DTM has content
+if (nrow(dtm) == 0 | ncol(dtm) == 0) {
+  print("DTM is empty - check your tokens data")
+} else {
+  print(paste("DTM has", nrow(dtm), "documents and", ncol(dtm), "terms"))
+}
+
+# Create LDA model
+lda_model <- LDA(dtm, k = 5, control = list(seed = 1234))
+
+# Get top words for each topic
+topic_words <- lda_model %>%
+  tidy(matrix = "beta") %>%
+  group_by(topic) %>%
+  slice_max(beta, n = 10) %>%
+  ungroup()
+
+# View the results
+topic_words
+
+# Get document-topic probabilities
+doc_topics <- lda_model %>%
+  tidy(matrix = "gamma") %>% 
+  group_by(document) %>% 
+  slice_max(gamma, n = 1) %>%
+  ungroup()
+
+# View some examples
+head(doc_topics, 10)
+
+# Visualise the top terms per topic
+library(ggplot2)
+
+topic_words %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  ggplot(aes(x = beta, y = term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free") +
+  scale_y_reordered() +
+  labs(title = "Top 10 Terms in Each Topic",
+       x = "Beta (word probability in topic)",
+       y = "Terms")
+
+# Create a named vector for topic labels
+topic_labels <- c("1" = "Product Safety & Quality", 
+                  "2" = "Dairy Industry & Farming", 
+                  "3" = "Business & Economics",
+                  "4" = "Environmental & Sustainability",
+                  "5" = "Corporate Communications")
+
+# Visualization code with custom labels
+library(ggplot2)
+topic_words %>%
+  mutate(term = reorder_within(term, beta, topic)) %>%
+  ggplot(aes(x = beta, y = term, fill = factor(topic))) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~ topic, scales = "free", 
+             labeller = labeller(topic = topic_labels)) +
+  scale_y_reordered() +
+  labs(title = "Top 10 Terms in Each Topic",
+       x = "Beta (word probability in topic)",
+       y = "Terms")
+
+
+```
+
+## Data-informed insights on Level of user engagement
+
+Average (mean) no. of likes for a post is healthy at 46. As the most common no. is 3, this suggests some particular posts were more popular. 
+The comment & share counts shows a similar trend, however comments are rare with 50% of posts getting nil comments (min & 1st Quartile.), suggesting not a lot of engagement is generated through comments.
+Video content attracts far more engagement on social media, with video content being played 36,142 times on average (mean).
+Extreme outliers exist e.g max. likes > 9k, comments > 4k & video plays at 1.2m. These are all way higher than the medians so maybe some content went "viral" (e.g. Ritchie promo). 
+Posts are somewhat under performing with 1/4 of posts getting no likes, comments or shares.
+Recommendation would be to continue to promote & prioritise video content as it generates substantially higher engagement than static posts.
+Because share rates are low (average of 4.4 shares indicates content isn't widely redistributed), a focus on eliciting higher engagement from posts is essential (perhaps with offers/promos included).
+Would also be of benefit to analyse the content of the most liked posts and videos to replicate the success of those in future posts. 
+The GPlot for platforms shows that not only does Facebook get the most likes but that some of the extreme outliers occur on this platform. It is clearly the one to focus on due to it's dominance in achieving engagement through "Likes".
+Because p-value is very small (almost zero), we would reject the null hypothesis that there is no difference across platforms and conclude that there is, with over 99% confidence. 
+So there is a statistically significant difference in Like counts across platforms.
+The very high F-value also indicates large differences between the platform averages for Like counts.
+
+
+```{r req_3b}
+# Descriptive statistics for engagement metrics
+summary(fonterra[c("likeCount", "commentCount", "shareCount", "videoplayCount")])
+
+# Visualising engagement across platforms
+fonterraNew3 %>%
+  ggplot(aes(x = platform, y = likeCount)) +
+  geom_boxplot() +
+  labs(title = "Distribution of Likes Across Platforms")
+
+# ANOVA for likes across different platforms
+anova_result <- aov(likeCount ~ platform, data = fonterraNew3) 
+summary(anova_result)
+
+```
+
+## Factors that influence number of likes
+
+TikTok doesn't have much influence on Like count compared to Facebook & Instagram. 
+Higher engagement appears to correlate with fewer likes, suggesting that while people are attracted to the site on social media, the content isn't generating much interest.
+However the R-squared rating shows that the model is only explaining 6% of the variation in Like count, so there is a serious data deficiency in the regression model.
+
+```{r req_3c}
+# Fit a linear regression model
+lm_model <- lm(likeCount ~ platform + engagementRate + media, data = fonterraNew3)
+summary(lm_model)
+
+
+```

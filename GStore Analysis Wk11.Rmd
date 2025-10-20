@@ -1,0 +1,268 @@
+---
+title: "Week 11 Lab"
+output: 
+  html_document:
+    code_download: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+## Group Presentation and Evaluation
+
+### Scenario
+
+"The 80/20 principle permeates business: 20% of customers, and 20% of products, generate 80% of revenue." [(Bahr, 2022)](https://www.forbes.com/sites/forbesfinancecouncil/2022/02/08/the-8020-rule-is-brutal-thats-why-it-works/?sh=7c27ddfb5de7). This Pareto Principle suggests that roughly 80% of outcomes come from 20% of causes. In a business context, this suggests that we should identify high-value customers who contribute the most revenue and target our marketing and other activities towards them. The manager of GStore Ltd has asked you to identify factors that influence transaction revenue, in particular the manager is interested in insights that can help them improve their marketing strategy. The manager also wants a model to predict transaction revenue.
+
+------------------------------------------------------------------------
+
+### Data
+
+The data used in this exercise is a small refined subset of the [Google Analytics Customer Revenue Prediction](https://www.kaggle.com/competitions/ga-customer-revenue-prediction/overview) dataset. The data table is provided as *week11_gstore.csv* and it includes information about purchase transactions that occurred in the United States, where each element represents one website visit and subsequent purchase from the [Google Merchandise Store](https://shop.googlemerchandisestore.com/).
+
+Descriptions of variables in *week11_gstore.csv*:
+
+| Name               | Description                                                                                                                                                   |
+|------------------|------------------------------------------------------|
+| fullVisitorID      | Unique visitor ID                                                                                                                                             |
+| visit_wday         | Day of the week when the website was visited (from 1 (Monday) to 7 (Sunday))                                                                                  |
+| visit_hour         | Hour of the day when the website was visited (from 0 (12:00AM) to 23 (11:00PM))                                                                               |
+| channelGrouping    | Channel via which the visitor came to the website (see: [Google Analytics dimensions and metrics](https://support.google.com/analytics/answer/9756891?hl=en)) |
+| operatingSystem    | Operating system of the device used                                                                                                                           |
+| deviceCategory     | Type of device used                                                                                                                                           |
+| campaign           | Google Ads campaign                                                                                                                                           |
+| hits               | Total number of requests made to the website server during the session (e.g., each image displayed on a webpage is one hit)                                   |
+| pageviews          | Total number of page views within the session                                                                                                                 |
+| newVisits          | Whether this session is by a new visitor                                                                                                                      |
+| timeOnSite         | Total time of the session expressed in seconds                                                                                                                |
+| transactionRevenue | Total transaction revenue, expressed in USD                                                                                                                   |
+
+------------------------------------------------------------------------
+
+### Requirements
+
+Complete the requirements in the respective code chunks provided. Add any notes/commentaries in the white text space.
+
+1.  Initial setup.
+
+    -   Set up a project folder for this exercise that includes all relevant files downloaded from Moodle.
+    -   Install and load packages, and import and preview data.
+
+```{r initial, eval = FALSE}
+# Install and load packages used in this session
+if(!require("pacman"))install.packages("pacman")
+pacman::p_load(readr, dplyr, tidyr, stringr, ggplot2)
+pacman::p_load(DescTools, skimr, ggpubr, RColorBrewer, tidytext, tidyverse)
+
+# Preview structure and summary
+str(week11_gstore)
+skimr::skim(week11_gstore)
+
+
+```
+
+2.  Causal analysis
+
+    -   Conduct common data preparation checks and prepare the data for analysis.
+    -   Conduct exploratory data analysis and appropriate bivariate analysis.
+    -   Form the best linear regression model you can and check whether the model satisfies linear regression assumptions.
+
+```{r causal, eval = FALSE}
+# Check types
+glimpse(week11_gstore)
+
+# Convert visitor ID and other column data names to factors
+week11_gstore <- week11_gstore %>%
+  mutate(
+    fullVisitorId   = as.factor(fullVisitorId),
+    channelGrouping = as.factor(channelGrouping),
+    operatingSystem = as.factor(operatingSystem),
+    deviceCategory  = as.factor(deviceCategory),
+    newVisits       = as.factor(newVisits))
+
+# Check for NAs
+colSums(is.na(week11_gstore))
+
+# Remove duplicates
+week11_gstore <- week11_gstore %>% distinct()
+
+# Check for outliers in numeric data
+summary(week11_gstore)
+
+# Ensure transaction Revenue is numeric (for regression)
+week11_gstore <- week11_gstore %>%
+  mutate(transactionRevenue = as.numeric(transactionRevenue))
+
+# Check how many unique values "(not set)" has in campaign column
+table(week11_gstore$campaign)
+
+# As almost all values are "(not set)", drop the variable
+week11_gstore <- week11_gstore %>%
+  select(-campaign)
+
+# Bivariate Analysis - what factors influence transaction revenue?
+# Numeric predictors vs revenue
+ggplot(week11_gstore, aes(x = hits, y = transactionRevenue)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", col = "red") +
+  labs(title = "Hits vs Transaction Revenue")
+
+ggplot(week11_gstore, aes(x = pageviews, y = transactionRevenue)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", col = "red") +
+  labs(title = "Pageviews vs Transaction Revenue")
+
+ggplot(week11_gstore, aes(x = timeOnSite, y = transactionRevenue)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", col = "red") +
+  labs(title = "Time on Site vs Transaction Revenue")
+
+# Categorical predictors vs revenue
+ggplot(week11_gstore, aes(x = channelGrouping, y = transactionRevenue)) +
+  geom_boxplot() +
+  labs(title = "Channel vs Transaction Revenue")
+
+ggplot(week11_gstore, aes(x = deviceCategory, y = transactionRevenue)) +
+  geom_boxplot() +
+  labs(title = "Device Category vs Transaction Revenue")
+
+
+```
+Note: The 'campaign' column was explored but found uninformative because of the dominance of “(not set)” results. Therefore the column and it's data have been excluded from this analysis.
+
+Bivariate analysis (ignoring outliers) suggests:
+a) a closer correlation between 100-300 hits and higher transaction revenue
+b) a closer correlation between 0 - 100 page views and higher transaction revenue
+c) a closer correlation between 0 - 3000 seconds on site and higher transaction revenue
+d) a closer correlation between direct & referral channels and higher transaction revenue
+e) a very strong correlation between desktop devices and higher transaction revenue
+
+
+3.  Prediction
+
+    -   Build the best linear regression model you can for prediction using the machine learning workflow, notably:
+        -   Split the dataset
+        -   Define a recipe
+        -   Build a model specification
+        -   Bundle the processing and modelling requests into a workflow
+        -   Tune hyperparameters and finalise the machine learning workflow
+        -   Fit the model and evaluate performance.
+
+```{r prediction, eval = FALSE}
+# Conduct correlation checks for numeric predictors
+cor(week11_gstore %>% 
+      select(transactionRevenue, hits, pageviews, timeOnSite, visit_wday, visit_hour))
+
+# Log transformation
+week11_gstore <- week11_gstore %>%
+  mutate(logRevenue = log1p(transactionRevenue))   # log(1+x)
+
+model1 <- lm(logRevenue ~ hits + pageviews + timeOnSite + 
+               visit_wday + visit_hour +
+               channelGrouping + operatingSystem + 
+               deviceCategory + newVisits,
+             data = week11_gstore)
+
+summary(model1)
+
+# Residual diagnostics
+par(mfrow=c(2,2))
+plot(model1)
+
+# Variance Inflation Factor (collinearity)
+library(car)
+vif(model1)
+
+# remove fullvisitorId 
+week11_gstore2 <- week11_gstore %>%
+  select(-fullVisitorId)
+
+week11_gstore2 <- week11_gstore2 %>%
+  mutate(logRevenue = log1p(transactionRevenue))
+
+# Fit linear model with remaining parameters
+g_model <- lm(logRevenue ~ ., data = week11_gstore2)
+
+# View output
+summary(g_model)
+par(mfrow = c(2, 2))  # 2x2 grid
+plot(g_model)
+
+# 1. Load tidymodels
+library(tidymodels)
+
+# 2. Split the data
+set.seed(123)  # reproducibility
+data_split <- initial_split(week11_gstore, prop = 0.8, strata = transactionRevenue)
+
+# 3. Create training and testing sets
+train_data <- training(data_split)
+test_data  <- testing(data_split)
+
+# Define recipe for logRevenue
+revenue_recipe <- recipe(logRevenue ~ visit_wday + visit_hour + channelGrouping +
+                                       operatingSystem + deviceCategory +
+                                       hits + pageviews + newVisits + timeOnSite,
+                         data = train_data) %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>%   # convert categorical to dummies
+  step_normalize(all_numeric(), -all_outcomes())   # scale numeric predictors
+
+# Define linear regression model
+lin_reg_spec <- linear_reg() %>%
+  set_engine("lm")
+
+# Workflow
+revenue_wf <- workflow() %>%
+  add_model(lin_reg_spec) %>%
+  add_recipe(revenue_recipe)
+
+# Fit workflow
+revenue_fit <- revenue_wf %>%
+  fit(data = train_data)
+
+# Predict on test data
+test_results <- predict(revenue_fit, test_data) %>%
+  bind_cols(test_data %>% select(logRevenue))
+
+# Evaluate performance
+metrics <- yardstick::metrics(test_results, truth = logRevenue, estimate = .pred)
+metrics
+
+# Create cross-validation folds
+set.seed(123)
+cv_folds <- vfold_cv(train_data, v = 10, strata = logRevenue)
+
+# Fit workflow across folds
+cv_results <- fit_resamples(
+  revenue_wf,
+  resamples = cv_folds,
+  metrics = metric_set(rmse, rsq, mae)
+)
+
+# Summarise metrics across folds
+cv_metrics <- collect_metrics(cv_results)
+cv_metrics
+
+
+
+
+```
+The Correlation Matrix shows a very strong correlation between hits & page views (97.6%)
+It also shows a strong correlation between time on site & page views (63.3%) and time on site & hits (60%)
+The Linear Regression plots shows The Residuals vs Fitted plot indicates that the regression model does not fully satisfy the assumptions of linearity and homoscedasticity.
+It shows that there is some non-linear relationships between the independent and dependent variables as well as clear bounds due to transformation.
+The Q–Q plot shows that the residuals are fairly normally distributed for most of the data, but the existence of outliers creates a deviation away from normal distribution at the higher extremities.
+The Scale–Location plot that checks for homoscedasticity (constant variance) shows that the variance of residuals isn't constant and that they increase with higher fitted values.
+This is shown by the upward curve of the red line, suggesting heteroscedasticity.
+More data would be required to improve these results.
+ 
+
+4.  Based on your findings, provide insights on what factors influence transaction revenue and data-informed recommendations for marketing strategies. Hypothesise two distinct factors that are not captured in the dataset and could improve model fit if they could be measured and included in the analysis. Comment on whether the prediction model built can be relied on for predicting transaction revenue.
+
+Answer: Because the Correlation Matrix shows a strong correlation between time on site & page views (63.3%) and time on site & hits (60%), this suggests that if there is also a strong positive correlation between time on site and transaction revenue (Jorge?), then finding ways to increase visitor engagement is key to increasing T.O.S and therefore transaction revenue.
+
+Hypothetically, the erroneous data in the Campaign column of the week11_gstore dataset could be replaced with a clear set of parameters that identify the Google Ads Campaign that was followed by the user to visit the website. The addition of that data could improve model fit and would provide valuable insight into the effectiveness of individual campaigns in leading the visitor to respond and purchase from the store. 
+
+Additionally, adding a column to the week11_gstore dataset with location descriptors (by e.g. State) could improve model fit further and would provide valuable insight into the areas within the USA that show a preference to online purchasing over the other States. Hypothetically, the Pareto Principle may show up in revealing that States with a higher concentration of corporate businesses (e.g. New York, California) have a higher incidence of computer use and hence a greater propensity to make online purchases than say the rural States. This could reveal the 20% of States to concentrate on with online campaigns.     
+
+We recommend adding Urchin Tracking Module (UTM) parameters to the final URL suffix to capture information such as Ad ID or Campaign when a visitor submits a form.
+

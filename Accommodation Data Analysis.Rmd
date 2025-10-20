@@ -1,0 +1,796 @@
+---
+title: "Final Assignment!"
+output: 
+  html_document:
+    code_download: TRUE
+editor_options: 
+  chunk_output_type: console
+---
+
+Maintain a tidy and readable R Markdown file that runs without any errors. Annotate your code by including brief descriptions of what the codes do.
+
+*Notes:* 
+- You can have separate code chunks within each section if preferred and/or include more subheadings. The `Insert a new code chunk` green button is on the top left corner and subheadings can be defined by hashtags.
+- Maintain the main headings that separate the requirements and make sure the codes can run in the order presented.
+- Consider completing your text responses in a document editor with spellcheck and then copy and paste the responses into the appropriate location in the RMD file.
+
+# Install and load packages and import and preview data
+
+```{r initial}
+# Install and load packages
+if(!require("pacman"))install.packages("pacman")
+pacman::p_load(readr, dplyr, tidyr, stringr, lubridate, purrr, ggplot2, gridExtra, mapview, leafpop, DescTools, finalfit, rstatix)
+pacman::p_load(tidytext, textstem, wordcloud, textdata)
+pacman::p_load(rsample, recipes, parsnip, workflows, dials, tune, yardstick, kknn)
+
+# Import data and preview
+main <- read_csv("Hotel_main.csv")
+pred <- read_csv("Hotel_pred.csv")
+review <- read_csv("Review.csv")
+
+# Preview the data
+glimpse(main)
+glimpse(pred)
+glimpse(review)
+
+# Check for Grosvenor Motor Inn
+main %>% filter(id == 1051043)
+
+# Also check if it's in the pred dataset
+pred %>% filter(id == 1051043)
+
+# Check for missing values across datasets
+summary(main)
+summary(pred)
+summary(review)
+
+# Convert logical NA values to 0 to handle NA's in the amenities columns
+pred <- pred %>%
+  mutate(across(starts_with("amenity"), ~replace_na(as.numeric(.), 0)))
+
+```
+
+# Analysis on strengths and areas for improvement and how the hotel compares with competitors
+
+## Exploratory data analysis
+# Insights
+Many of the NA's in the amenity columns of the Hotel_main dataset likely refer to hotels that don't have or report those amenities.
+There are also NA's in the Review dataset which are in rating subcategories and this is normal, as not all reviewers rate every subcategory. 
+The Hotel_pred dataset is missing the price variable as expected, as this is what will be predicted after training the model on the Hotel_main dataset.
+The NA count in summary(main) shows 423 hotels out of the total 889 are missing price which will need to be handled in the modelling.
+Comparing the summary(main) to summary(pred) tables allows for comparison of our client's hotel to the competitor results in the Hotel_main table. 
+This reveals that Grosvenor Motor Inn's average ratings are quite low compared to competitors, for example: 
+ratingCleanliness: 2.547 (vs competitor mean 4.470)
+ratingRoom: 2.59 (vs competitor mean 4.279)
+ratingService: 2.764 (vs competitor mean 4.419)
+However, the location rating of the Grosvenor Motor Inn is good at 4.042 vs the competitor mean of 4.460.
+The glimpse(pred.) table shows that there are lots of negative reviews (121 below average & only 41 above average).
+The Grosvenor Motor Inn appears to have a serious quality problem as it's ratings are bottom-tier, especially for cleanliness and room quality.
+
+
+### Required visuals
+
+```{r req_2ai}
+# Count reviews to understand the data
+review %>% 
+  count(hotelId, sort = TRUE)
+
+# Check for the client's review count specifically
+review %>% 
+  filter(hotelId == 1051043) %>% 
+  nrow()
+
+# Fix the pred dataset amenities by converting logical NAs to 0
+pred <- pred %>%
+  mutate(across(starts_with("amenity"), ~replace_na(as.numeric(.), 0)))
+
+# Create required visual: Hotels ranked by IQR and determine how many reviews each hotel has
+review_iqr <- review %>%
+  group_by(hotelId) %>%
+  summarise(
+    iqr_rating = IQR(ratingOverall, na.rm = TRUE),
+    n_reviews = n())  %>% 
+    arrange(desc(iqr_rating))
+
+# Preview it
+head(review_iqr, 10)
+
+# Join with main dataset to get hotel names
+review_iqr_plot <- review_iqr %>%
+  left_join(main %>% select(id, name), by = c("hotelId" = "id"))
+
+# Check if our client is in there
+review_iqr_plot %>% filter(hotelId == 1051043)
+
+# Create the visualization - hotels ranked by IQR
+ggplot(review_iqr_plot, aes(x = reorder(name, iqr_rating), y = iqr_rating)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Hotels Ranked by Diversity in Customer Perspective",
+    subtitle = "Measured by Interquartile Range of Overall Rating",
+    x = "Hotel",
+    y = "IQR of Overall Rating") +
+  theme_minimal()
+
+#Reduce no. hotels for easier analysis
+# Hotels with at least 20 reviews
+ggplot(review_iqr_plot %>% filter(n_reviews >= 20) %>% arrange(desc(iqr_rating)) %>% slice_head(n = 20), 
+       aes(x = reorder(name, iqr_rating), y = iqr_rating)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Hotels Ranked by Diversity in Customer Perspective",
+    subtitle = "Hotels with 20+ reviews, measured by IQR of Overall Rating",
+    x = "Hotel",
+    y = "IQR of Overall Rating") +
+  theme_minimal()
+
+## Where does our client sit among the rankings? 
+review_iqr_plot %>% filter(hotelId == 1051043)
+
+# Fix: Join with BOTH main and pred datasets to get all hotel names
+review_iqr_plot <- review_iqr %>%
+  left_join(
+    bind_rows(
+      main %>% select(id, name),
+      pred %>% select(id, name)
+    ), 
+    by = c("hotelId" = "id"))
+
+# Check client again
+review_iqr_plot %>% filter(hotelId == 1051043)
+
+# Determine our client's individual review ratings
+client_reviews <- review %>%
+  filter(hotelId == 1051043) %>%
+  select(ratingOverall, ratingCleanliness, ratingLocation, 
+         ratingRoom, ratingService, ratingSleep, ratingValue)
+
+# Reshape to long format for plotting
+client_ratings_long <- client_reviews %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "rating_category",
+    values_to = "rating") %>%
+  mutate(
+    rating_category = str_remove(rating_category, "rating"),
+    rating_category = factor(rating_category, 
+                            levels = c("Overall", "Cleanliness", "Location", 
+                                     "Room", "Service", "Sleep", "Value"))) %>%
+  drop_na(rating)
+
+# Create boxplot to show spread
+ggplot(client_ratings_long, aes(x = rating_category, y = rating, fill = rating_category)) +
+  geom_boxplot() +
+  scale_y_continuous(limits = c(1, 5), breaks = 1:5) +
+  labs(
+    title = "Grosvenor Motor Inn: Rating Distribution by Category",
+    subtitle = "Spread of ratings across overall and subcategories",
+    x = "Rating Category",
+    y = "Rating (1-5)") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+
+
+```
+## Further insights
+The table showing interquartile range of "rating_overall" among the top 10, shows considerable diversity in customer perspective with some at an IQR of 3 or 3.5 revealing a big diversity in customer opinions (some love it, some hate it). A  low IQR of say 0.5 would suggest that customers mostly agree, be it consistently good or consistently bad.
+Hotel 4580871 for example has the highest IQR of 3.5 showing that while it doesn't have many reviews (75) they are very polarised.
+The visual plot of hotels with 20+ reviews reveals a moderate diversity of opinions, confirming that there is some meaningful disagreement among customers.
+As our client's hotel doesn't feature in the top 20, it suggests that while they're not too polarised, customers do have mixed opinions about the hotel. 
+Our client's "Rating Distribution by Category" candlestick visual displays some concerning indicators. For example:
+Overall: Median rating of 2 with 50% of ratings between 1-3, indicating very poor performance
+Cleanliness, Location & Room: Medians around 3 with wide ranges, showing inconsistent experiences
+Service: While the median is 4, the range spans from 1-5, revealing significant inconsistency
+Sleep: Median of 4 but the range also includes some very low ratings (down to 1)
+Value: Median of 2 with the interquartile range heavily concentrated in lower ratings
+The wide boxes across categories indicate polarised opinions and inconsistent guest experiences, a critical issue to address.
+
+### Further exploratory data analysis
+
+```{r req_2aii}
+# Calculate average ratings: client vs all competitors
+competitor_avg <- main %>%
+  summarise(
+    avg_cleanliness = mean(ratingCleanliness, na.rm = TRUE),
+    avg_location = mean(ratingLocation, na.rm = TRUE),
+    avg_room = mean(ratingRoom, na.rm = TRUE),
+    avg_service = mean(ratingService, na.rm = TRUE),
+    avg_sleep = mean(ratingSleep, na.rm = TRUE),
+    avg_value = mean(ratingValue, na.rm = TRUE))
+
+# Client's averages (from pred dataset)
+client_avg <- pred %>%
+  select(ratingCleanliness, ratingLocation, ratingRoom, 
+         ratingService, ratingSleep, ratingValue) %>%
+  rename_all(~str_replace(., "rating", "avg_"))
+
+# Combine for comparison
+comparison <- bind_rows(
+  competitor_avg %>% mutate(hotel = "Competitors"),
+  client_avg %>% mutate(hotel = "Grosvenor Motor Inn"))
+
+# Reshape for plotting
+comparison_long <- comparison %>%
+  pivot_longer(
+    cols = starts_with("avg_"),
+    names_to = "category",
+    values_to = "rating") %>%
+  mutate(category = str_remove(category, "avg_") %>% str_to_title())
+
+# Create comparison plot
+ggplot(comparison_long, aes(x = category, y = rating, fill = hotel)) +
+  geom_col(position = "dodge") +
+  scale_y_continuous(limits = c(0, 5)) +
+  labs(title = "Grosvenor Motor Inn vs Competitors: Average Ratings",
+    x = "Rating Category",
+    y = "Average Rating",
+    fill = "Hotel Group") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Calculate average ratings by year for Grosvenor Motor Inn (only include years with at least 5 reviews)
+client_trends <- review %>%
+  filter(hotelId == 1051043) %>%
+  mutate(review_year = year(reviewDate)) %>%
+  group_by(review_year) %>%
+  summarise(
+    avg_overall = mean(ratingOverall, na.rm = TRUE),
+    avg_cleanliness = mean(ratingCleanliness, na.rm = TRUE),
+    avg_room = mean(ratingRoom, na.rm = TRUE),
+    avg_service = mean(ratingService, na.rm = TRUE),
+    avg_value = mean(ratingValue, na.rm = TRUE),
+    n_reviews = n()) %>%
+  filter(n_reviews >= 5)  
+
+# Reshape for plotting
+client_trends_long <- client_trends %>%
+  pivot_longer(
+    cols = starts_with("avg_"),
+    names_to = "category",
+    values_to = "rating") %>%
+  mutate(category = str_remove(category, "avg_") %>% str_to_title())
+
+# Create trend plot
+ggplot(client_trends_long, aes(x = review_year, y = rating, color = category)) +
+  geom_line(linewidth = 1) +
+  geom_point() +
+  scale_y_continuous(limits = c(1, 5)) +
+  labs(
+    title = "Grosvenor Motor Inn: Rating Trends Over Time",
+    x = "Year",
+    y = "Average Rating",
+    color = "Category") +
+  theme_minimal()
+
+# Check number of reviews per year to ensure the trend is reliable
+client_trends %>% select(review_year, n_reviews)
+
+# Calculate client's average overall rating from reviews
+client_avg_overall <- review %>%
+  filter(hotelId == 1051043) %>%
+  summarise(avg_rating = mean(ratingOverall, na.rm = TRUE)) %>%
+  pull(avg_rating)
+
+# Price vs Overall Rating
+ggplot(main %>% filter(!is.na(price)), 
+       aes(x = (ratingOverallAbove * 5 + ratingOverallAverage * 3 + ratingOverallBelow * 1.5) / 
+               (ratingOverallAbove + ratingOverallAverage + ratingOverallBelow), 
+           y = price)) +
+  geom_point(alpha = 0.5) +
+  geom_point(data = data.frame(x = client_avg_overall, y = 114),
+             aes(x = x, y = y), color = "red", size = 4) +
+  geom_smooth(method = "lm", se = TRUE) +
+  labs(title = "Price vs Overall Rating",
+    subtitle = "Red point = Grosvenor Motor Inn at $114/night",
+    x = "Average Overall Rating",
+    y = "Price per Night ($)") +
+  theme_minimal()
+
+# Check if business reviews exist
+business_check <- review %>%
+  filter(tripType == "BUSINESS", !is.na(ratingOverall))
+
+nrow(business_check)
+
+# Join with amenities
+business_with_amenities <- business_check %>%
+  left_join(main %>% select(id, amenityWifi, amenityParking, amenityBreakfast, amenityLaundry), 
+            by = c("hotelId" = "id"))
+
+# Check result
+head(business_with_amenities %>% select(hotelId, ratingOverall, amenityWifi, amenityParking))
+
+# Now calculate the impact
+business_amenity_impact <- business_with_amenities %>%
+  summarise(
+    wifi_yes = mean(ratingOverall[!is.na(amenityWifi)], na.rm = TRUE),
+    wifi_no = mean(ratingOverall[is.na(amenityWifi)], na.rm = TRUE),
+    parking_yes = mean(ratingOverall[!is.na(amenityParking)], na.rm = TRUE),
+    parking_no = mean(ratingOverall[is.na(amenityParking)], na.rm = TRUE),
+    breakfast_yes = mean(ratingOverall[!is.na(amenityBreakfast)], na.rm = TRUE),
+    breakfast_no = mean(ratingOverall[is.na(amenityBreakfast)], na.rm = TRUE),
+    laundry_yes = mean(ratingOverall[!is.na(amenityLaundry)], na.rm = TRUE),
+    laundry_no = mean(ratingOverall[is.na(amenityLaundry)], na.rm = TRUE))
+
+business_amenity_impact
+
+# Reshape for easier interpretation
+business_amenity_long <- business_amenity_impact %>%
+  pivot_longer(everything(), names_to = "amenity_status", values_to = "avg_rating") %>%
+  separate(amenity_status, into = c("amenity", "has_amenity"), sep = "_") %>%
+  pivot_wider(names_from = has_amenity, values_from = avg_rating) %>%
+  mutate(rating_difference = yes - no)
+
+business_amenity_long
+
+# Photo count for top hotels
+# Calculate overall rating for hotels
+hotel_photos <- main %>%
+  filter(category == "Hotel") %>%
+  mutate(
+    ratingOverall = (ratingOverallAbove * 5 + ratingOverallAverage * 3 + ratingOverallBelow * 1.5) / 
+                    (ratingOverallAbove + ratingOverallAverage + ratingOverallBelow)) %>%
+  filter(!is.na(ratingOverall)) %>%
+  select(id, name, photo, ratingOverall) %>%
+  arrange(desc(ratingOverall))
+
+# Get top 15 hotels
+top_hotels_photos <- hotel_photos %>%
+  slice_head(n = 15)
+
+# Add client data
+client_photo_data <- pred %>%
+  mutate(ratingOverall = mean(review %>% filter(hotelId == 1051043) %>% pull(ratingOverall), na.rm = TRUE)) %>%
+  select(id, name, photo, ratingOverall)
+
+# Combine and plot
+combined_photos <- bind_rows(
+  top_hotels_photos,
+  client_photo_data) %>%
+  mutate(is_client = name == "Grosvenor Motor Inn")
+
+ggplot(combined_photos, aes(x = reorder(name, photo), y = photo, fill = is_client)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values = c("steelblue", "coral"), guide = "none") +
+  labs(
+    title = "Photo Count: Top-Rated Hotels vs Grosvenor Motor Inn",
+    subtitle = "Quick win: Add more photos to match competitors",
+    x = "Hotel",
+    y = "Number of Photos on TripAdvisor") +
+  theme_minimal()
+
+# Could a higher photo count correlate with higher overall ratings?
+# Scatterplot: Photos vs Overall Rating for hotels
+hotel_photos_rating <- main %>%
+  filter(category == "Hotel") %>%
+  mutate(
+    ratingOverall = (ratingOverallAbove * 5 + ratingOverallAverage * 3 + ratingOverallBelow * 1.5) / 
+                    (ratingOverallAbove + ratingOverallAverage + ratingOverallBelow)) %>%
+  filter(!is.na(ratingOverall), !is.na(photo))
+
+# Add client
+client_data_scatter <- data.frame(
+  photo = 71,
+  ratingOverall = mean(review %>% filter(hotelId == 1051043) %>% pull(ratingOverall), na.rm = TRUE),
+  is_client = TRUE)
+
+hotel_photos_rating <- hotel_photos_rating %>%
+  mutate(is_client = FALSE) %>%
+  bind_rows(client_data_scatter)
+
+# Plot
+ggplot(hotel_photos_rating, aes(x = photo, y = ratingOverall, color = is_client)) +
+  geom_point(alpha = 0.6, size = 3) +
+  geom_smooth(data = filter(hotel_photos_rating, !is_client), method = "lm", se = TRUE, color = "blue") +
+  scale_color_manual(values = c("gray", "red"), guide = "none") +
+  labs(
+    title = "Relationship Between Photo Count and Hotel Ratings",
+    subtitle = "Red point = Grosvenor Motor Inn",
+    x = "Number of Photos on TripAdvisor",
+    y = "Overall Rating") +
+  theme_minimal()
+
+# Calculate correlation
+cor.test(hotel_photos_rating$photo, hotel_photos_rating$ratingOverall)
+
+# What percentage of competitors offer each amenity?
+competitor_amenities <- main %>%
+  summarise(across(starts_with("amenity"), ~mean(., na.rm = TRUE) * 100)) %>%
+  pivot_longer(everything(), names_to = "amenity", values_to = "competitor_pct") %>%
+  mutate(amenity = str_remove(amenity, "amenity"))
+
+# What does your client offer? (1 = yes, 0 = no)
+client_amenities <- pred %>%
+  select(starts_with("amenity")) %>%
+  pivot_longer(everything(), names_to = "amenity", values_to = "client_has") %>%
+  mutate(
+    amenity = str_remove(amenity, "amenity"),
+    client_has = ifelse(is.na(client_has) | client_has == 0, "No", "Yes"))
+
+# Compare side by side
+amenity_comparison <- competitor_amenities %>%
+  left_join(client_amenities, by = "amenity") %>%
+  arrange(desc(competitor_pct))
+
+# View the comparison
+amenity_comparison
+
+# Visualize it
+ggplot(amenity_comparison, aes(x = reorder(amenity, competitor_pct), y = competitor_pct, fill = client_has)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values = c("No" = "coral", "Yes" = "steelblue"), name = "Grosvenor Has") +
+  labs(
+    title = "Amenity Offering: Competitors vs Grosvenor Motor Inn",
+    subtitle = "Red bars show amenities the client lacks",
+    x = "Amenity",
+    y = "% of Competitor Hotels Offering") +
+  theme_minimal()
+
+```
+# Insights from further exploratory data analysis
+The "Average Ratings" comparison visual reveals that Grosvenor Motor Inn lags behind it's competitors in all the categories of cleanliness, location, room, service, sleep and value. 
+The "Rating Trends Over Time visual suggest that this was once a high rating hotel (2012-2014). The ratings deteriorated until climbing again after 2018, indicating a possible refurbishment of the premises judging by the steep ratings increase especially for the Room (green line) category. 
+The low no. of reviews in 2020 is clearly due to Covid.
+The scatter plot for "Price vs Overall Rating" suggests that pricing is about right for it's level of quality, but the hotel is not competitive with the rest of the market. It is competing in the budget/low-quality segment when most of the market is at higher quality levels. 
+The current average $114/night is fair given the poorer quality, but for the Grosvenor Motor Inn to increase it's price it must improve quality first, as the market won't support higher prices at the 2.5-star quality rating. 
+Adding an analysis of business amenity impact on ratings (shown in the "business_amenity_long" output table) shows that WiFi matters the most (+0.81 rating boost) indicating that it is critical for business travelers.
+Parking is second (at +0.67) which makes sense as business travellers will likely have rental cars (especially coming from Auckland).
+Laundry helps (+0.24) and breakfast barely matters (+0.04).
+As images are considered to be a strong feature in online marketing, an analysis was conducted for photocount. As expected, there appears to be some positive correlation between the no. of photos on TripAdvisor and strength of overall rating. Grosvenor Motor Inn appears to lag it's competitors with a low photo count rating. A quick fix to correct this would be to upgrade the website with more and newer images, particularly where they showcase improved amenities. 
+The correlation output with p-value of 0.0001384 shows that we should reject the null hypothesis that photo count has no impact on  overall rating and conclude that it likely does and that the relationship is statistically significant. 
+However, Grosvenor's low rating relative to hotels with similar photo counts suggests the primary issue is service quality, not marketing.
+Other amenities revealed as lacking from the exploratory analysis when comparing our client to competitors include: provision of bicycles, breakfast, games, kitchen facilities and wheelchair access. Potentially also room service and an airport shuttle service.      
+These statistical analyses strongly support the outcomes obtained from the exploratory data analysis above. 
+
+## Text analysis
+### Term frequency analysis
+```{r req_2bi}
+# Get client reviews text
+client_text <- review %>%
+  filter(hotelId == 1051043) %>%
+  select(reviewId, text, title)
+
+# Tokenize and clean the text
+client_words <- client_text %>%
+  # Combine title and text
+  mutate(full_text = paste(title, text, sep = " ")) %>%
+  # Tokenize into words
+  unnest_tokens(word, full_text) %>%
+  # Remove stop words (common words like "the", "and", etc.)
+  anti_join(stop_words, by = "word") %>%
+  # Remove numbers
+  filter(!str_detect(word, "^[0-9]+$"))
+
+# Count word frequencies
+word_freq <- client_words %>%
+  count(word, sort = TRUE)
+
+# View top words
+head(word_freq, 20)
+
+# Visualize top 20 words
+word_freq %>%
+  slice_max(n, n = 20) %>%
+  ggplot(aes(x = reorder(word, n), y = n)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(
+    title = "Most Frequent Words in Grosvenor Motor Inn Reviews",
+    x = "Word",
+    y = "Frequency") +
+  theme_minimal()
+
+# Bigram analysis to get more meaning than single words show
+client_bigrams <- client_text %>%
+  mutate(full_text = paste(title, text, sep = " ")) %>%
+  unnest_tokens(bigram, full_text, token = "ngrams", n = 2) %>%
+  separate(bigram, c("word1", "word2"), sep = " ") %>%
+
+# Remove bigrams with stop words
+  filter(!word1 %in% stop_words$word,
+         !word2 %in% stop_words$word) %>%
+  
+# Remove numbers
+  filter(!str_detect(word1, "^[0-9]+$"),
+         !str_detect(word2, "^[0-9]+$")) %>%
+  
+# Recombine
+  unite(bigram, word1, word2, sep = " ")
+
+# Count bigram frequencies
+bigram_freq <- client_bigrams %>%
+  count(bigram, sort = TRUE)
+
+# View top bigrams
+head(bigram_freq, 20)
+
+# Visualize top 20 bigrams
+bigram_freq %>%
+  slice_max(n, n = 20) %>%
+  ggplot(aes(x = reorder(bigram, n), y = n)) +
+  geom_col(fill = "coral") +
+  coord_flip() +
+  labs(
+    title = "Most Frequent Phrases in Grosvenor Motor Inn Reviews",
+    x = "Phrase",
+    y = "Frequency") +
+  theme_minimal()
+
+```
+# Insights from Term frequency analysis
+The visual for most frequent words lacked insight, so we needed to do a bigram analysis to try for more descriptors.
+The Bigram analysis reveals the most frequent phrases to be more descriptive, particularly around amenity preferences e.g. spa bath, hot water, main road, car park, walking distance etc. 
+
+
+### Sentiment analysis
+
+```{r req_2bii}
+# Sentiment analysis using the Bing lexicon (positive/negative)
+client_sentiment <- client_words %>%
+  inner_join(get_sentiments("bing"), by = "word")
+
+# Count positive vs negative words
+sentiment_counts <- client_sentiment %>%
+  count(sentiment, sort = TRUE)
+
+# View the counts
+sentiment_counts
+
+# Visualize sentiment breakdown
+ggplot(sentiment_counts, aes(x = sentiment, y = n, fill = sentiment)) +
+  geom_col() +
+  scale_fill_manual(values = c("negative" = "coral", "positive" = "steelblue")) +
+  labs(
+    title = "Sentiment Analysis: Grosvenor Motor Inn Reviews",
+    x = "Sentiment",
+    y = "Frequency of Words") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+# Most common positive and negative words
+client_sentiment %>%
+  group_by(sentiment) %>%
+  count(word, sort = TRUE) %>%
+  slice_max(n, n = 10) %>%
+  ggplot(aes(x = reorder(word, n), y = n, fill = sentiment)) +
+  geom_col() +
+  coord_flip() +
+  facet_wrap(~sentiment, scales = "free_y") +
+  scale_fill_manual(values = c("negative" = "coral", "positive" = "steelblue")) +
+  labs(
+    title = "Top Positive and Negative Words in Reviews",
+    x = "Word",
+    y = "Frequency") +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+
+```
+# Insights from Sentiment Analysis
+The breakdown is 58% negative and 42% positive.
+There is an interesting dichotomy in that dirty is the most used negative term and clean is the most used positive term. This suggests a serious inconsistency in guest experience. 
+The predominant sentiment on the negative side appears to suggest a hotel that lacks cleanliness, is noisy (main road), is tired and has broken amenities.
+The predominant sentiment on the positive side appears to suggest a hotel that is often clean, is comfortable with friendly staff.
+
+# Price prediction model
+
+## Sample split
+
+```{r req_3a}
+# How many Hamilton hotels have price data?
+hamilton_hotels <- main %>%
+  filter(city == "Hamilton", !is.na(price))
+
+nrow(hamilton_hotels)
+mean(hamilton_hotels$price)
+range(hamilton_hotels$price)
+
+# Filter to Hamilton hotels only for fair comparison
+# Grosvenor Motor Inn competes with urban hotels, not rural luxury lodges or B&B's
+# This removes extreme price outliers and creates a relevant peer group
+hamilton_hotels <- main %>%
+  filter(city == "Hamilton", !is.na(price))
+
+# Use Hamilton hotels only for fair comparison
+set.seed(123)
+
+# Split Hamilton data into training and testing (80/20 split)
+# Use only hotels with price data
+hotel_split <- initial_split(hamilton_hotels, prop = 0.8, strata = price)
+hotel_train <- training(hotel_split)
+hotel_test <- testing(hotel_split)
+
+# Set up Cross Validation
+hotel_cv <- vfold_cv(hotel_train, v = 10, strata = price)
+
+# Check split
+cat("Training set size:", nrow(hotel_train), "\n")
+cat("Testing set size:", nrow(hotel_test), "\n")
+
+# Preview the folds
+hotel_cv
+
+
+```
+# Modelling Insights:
+The dataset categorises all accommodation as 'Hotel', 'Bed & Breakfast', or 'Specialty Lodging', with no specific 'Motel' or 'Motor Inn" category. Hamilton is comprised of mostly urban motels/motor inns, whereas the Waikato region includes luxury rural lodges and B&B's.
+The best available proxy therefore is a Hamilton city filter that removes the extreme rural luxury properties from the analysis. Since Grosvenor Motor Inn is located in Hamilton's CBD and competes primarily with urban accommodation, the analysis focuses on Hamilton-based hotels to ensure fair comparison and excludes rural luxury lodges that skew the regional data.
+
+## Recipe for data preparation
+
+```{r req_3b}
+# Check what variable types remain
+hotel_train %>% 
+  select(-id, -name, -description, -email, -website, -address) %>%
+  glimpse()
+
+#Create Recipe
+hotel_recipe <- recipe(price ~ ., data = hotel_train) %>%
+  # Remove non-predictor variables (all non-numeric)
+  step_rm(id, name, description, email, website, address, country, city, category) %>%
+  # Impute missing values
+  step_impute_median(all_numeric_predictors()) %>%
+  # Remove zero variance predictors
+  step_zv(all_predictors()) %>%
+  # Normalize
+  step_normalize(all_numeric_predictors()) %>%
+  # PCA
+  step_pca(all_numeric_predictors(), threshold = 0.8)
+
+#check PCA output
+hotel_recipe
+```
+
+## Model building
+
+```{r req_3c}
+# 1. Linear Regression Model 
+lm_spec <- linear_reg() %>%
+  set_engine("lm") %>%
+  set_mode("regression")
+
+lm_workflow <- workflow() %>%
+  add_recipe(hotel_recipe) %>%
+  add_model(lm_spec)
+
+# 2. Decision Tree Model to tune cost_complexity and tree_depth hyperparameters
+dt_spec <- decision_tree(cost_complexity = tune(),
+  tree_depth = tune()) %>%
+  set_engine("rpart") %>%
+  set_mode("regression")
+
+dt_workflow <- workflow() %>%
+  add_recipe(hotel_recipe) %>%
+  add_model(dt_spec)
+
+# Tune Decision Tree
+dt_grid <- grid_regular(
+  cost_complexity(range = c(-5, -1)),
+  tree_depth(range = c(3, 10)),
+  levels = 5)
+
+dt_tune <- dt_workflow %>%
+  tune_grid(
+    resamples = hotel_cv,
+    grid = dt_grid,
+    metrics = metric_set(rmse))
+
+# 3. K-Nearest Neighbors Model to tune neighbor hyperparameters
+knn_spec <- nearest_neighbor(neighbors = tune()) %>%
+  set_engine("kknn") %>%
+  set_mode("regression")
+
+knn_workflow <- workflow() %>%
+  add_recipe(hotel_recipe) %>%
+  add_model(knn_spec)
+
+# Tune KNN
+knn_grid <- grid_regular(
+  neighbors(range = c(3, 15)),
+  levels = 10)
+
+knn_tune <- knn_workflow %>%
+  tune_grid(
+    resamples = hotel_cv,
+    grid = knn_grid,
+    metrics = metric_set(rmse))
+
+# View the workflows
+lm_workflow
+dt_workflow
+knn_workflow
+
+# Fit Linear Regression (no tuning of hyperparameters required)
+lm_fit <- lm_workflow %>%
+  fit_resamples(resamples = hotel_cv,
+    metrics = metric_set(rmse),
+    control = control_resamples(save_pred = TRUE))
+
+# Collect metrics
+lm_metrics <- collect_metrics(lm_fit)
+dt_metrics <- collect_metrics(dt_tune)
+knn_metrics <- collect_metrics(knn_tune)
+
+# View results
+lm_metrics
+show_best(dt_tune, metric = "rmse")
+show_best(knn_tune, metric = "rmse")
+
+
+```
+
+## Evaluate best model
+The Linear Regression model (no tuning) has a mean RMSE of $52.10, the Decision Tree model has a mean RMSE of $59.90 and the KNN model has a mean RMSE of $48.70 (at neighbors = 9) so is the best performer. 
+RMSE of $48.70 on the KNN model means that on average, our predictions of price per night are off by a factor of about $49.00, which makes sense considering the rates per night range from $87 to $446, with a mean of $176. 
+So an average prediction error of $49 means the KNN model is off by a little over 1/4 of an average full night's stay. Therefore the model is quite accurate due to the lower variability in per night prices when focussing on just the city of Hamilton. 
+All RMSE results being significantly lower than the average price, also indicates a high prediction certainty.
+So opting for KNN due to it's superior RMSE result.
+
+```{r req_3d}
+# Select best KNN model
+best_knn <- select_best(knn_tune, metric = "rmse")
+
+# Finalize workflow
+final_knn <- knn_workflow %>% finalize_workflow(best_knn)
+
+# Fit on training and test set
+final_fit_knn <- final_knn %>% last_fit(hotel_split)
+
+# Get test metrics
+test_results <- collect_metrics(final_fit_knn)
+test_results
+
+```
+Training RMSE: $48.70
+Test RMSE: $76.90
+Rsquared: 0.817
+The testing metrics are higher than training, indicating the model has a degree of overfitting. 
+However, KNN can overfit on small datasets and we only have 46 hotels in the training dataset. 
+The R squared result of 0.82 (i.e. it explains 82% of price variance) reveals that the model's predictions are quite strong and definitely better than random guessing, so can be relied on for making predictions.
+
+## Use best model for prediction
+
+```{r req_3e}
+# Extract fitted workflow from last_fit results
+final_knn_fit <- extract_workflow(final_fit_knn)
+
+# Predict for client
+client_prediction <- predict(final_knn_fit, new_data = pred)
+client_prediction
+
+cat("Predicted price: $", round(client_prediction$.pred, 2), "\n")
+cat("Current price: $114\n")
+cat("Difference: $", round(client_prediction$.pred - 114, 2), "\n")
+
+
+```
+
+# Summary of main findings and recommendations
+The KNN model predicts a fair market price of $132/night for Grosvenor Motor Inn based on Hamilton hotel comparables, suggesting the current $114/night may be slightly under-priced by circa $18. 
+However, consider the other issues identified in this analysis:
+
+    1. Quality issues - The hotel's poor ratings (2.5-2.9 across most categories) vs Hamilton average (4.1-4.4)
+    2. Value perception - 58% negative sentiment, that is, many guests feel it's not worth it's current price
+
+Therefore our recommendation is that before looking to increase per night rates, first address some of the critical operational issues identified namely:
+
+    1. Fix cleanliness inconsistency - the most common complaint
+    2. Repair/replace broken amenities
+    3. Improve and promote WiFi availability and access to parking - critical for business travellers providing a +0.81 rating boost
+    4. Improve consistency of service
+    5. Promote the location as being near to a major supermarket and sports stadium
+    6. Expand photo library and highlight wifi capability, new car parks and other improvements to amenities
+    7. Consider introducing the provision of guest bicycles, breakfasts, games area, kitchen facilities and wheelchair access
+    8. Consider upgrading some rooms to include a spa bath or add a spa pool to the pool area
+    9. Consider offering an airport shuttle service
+
+Once overall ratings improve to a level of 3.5-4.0, a review of pricing could be undertaken, but at current quality ratings, a price increase could deter remaining customers and worsen an already poor value perception.
+
+The data clearly reveals that a focus on operational improvements (cleanliness, maintenance) as revealed in the exploratory, text and sentiment analyses should pay good dividends, especially when delivered with consistency.
+
+These improvements would help to enhance the already popular attribute of the hotel's location.
